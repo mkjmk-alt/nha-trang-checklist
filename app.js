@@ -13,13 +13,7 @@
     /^https:\/\//.test(config.apiBaseUrl) &&
     !config.apiBaseUrl.includes("YOUR-WORKER");
   const apiBaseUrl = apiConfigured ? config.apiBaseUrl.replace(/\/$/, "") : "";
-  const pollIntervals = {
-    active: clampInterval(config.pollIntervalsMs?.active, 30000),
-    idle: clampInterval(config.pollIntervalsMs?.idle, 60000),
-    longIdle: clampInterval(config.pollIntervalsMs?.longIdle, 180000),
-  };
-  const idleAfterMs = clampWindow(config.idleAfterMs, 120000);
-  const longIdleAfterMs = Math.max(clampWindow(config.longIdleAfterMs, 600000), idleAfterMs);
+  const pollSchedule = normalizePollSchedule(config.pollScheduleMs, [180000, 300000, 600000]);
   const clientId = getOrCreateClientId();
 
   let room = validRoom;
@@ -27,6 +21,10 @@
   let activeFilter = "all";
   let searchTerm = "";
   let pollTimer = null;
+  let pollStep = 0;
+  let pollingGeneration = 0;
+  let adaptiveSyncActive = false;
+  let nextPollAt = null;
   let relativeTimeTimer = null;
   let lastSyncedAt = null;
   let lastEtag = "";
@@ -35,7 +33,6 @@
   let flushTimer = null;
   let lastWriteStartedAt = 0;
   let toastTimer = null;
-  let lastActivityAt = Date.now();
 
   const elements = {
     checklist: document.querySelector("#checklist"),
@@ -71,7 +68,9 @@
 
     if (room && apiConfigured) {
       setSyncStatus("syncing", "처음 상태를 불러오는 중");
-      syncNow({ force: true }).finally(startPolling);
+      syncNow({ force: true }).then((result) => {
+        if (result === "changed" || result === "unchanged") enterManualMode();
+      });
     } else if (room && !apiConfigured) {
       setSyncStatus("error", "Worker 주소 설정 필요");
       elements.lastSyncText.textContent = "config.js에 배포한 Worker 주소를 입력해 주세요.";
@@ -87,7 +86,7 @@
       const now = new Date().toISOString();
       const entry = { checked: input.checked, updatedAt: now, clientId };
       entries[input.dataset.itemId] = entry;
-      markActivity();
+      startAdaptiveSync();
       saveEntries();
       render();
       if (room && apiConfigured) queueServerChanges({ [input.dataset.itemId]: entry });
@@ -109,7 +108,7 @@
     });
 
     elements.shareButton.addEventListener("click", handleShare);
-    elements.syncButton.addEventListener("click", () => syncNow({ force: true }).finally(startPolling));
+    elements.syncButton.addEventListener("click", handleManualSync);
     elements.resetButton.addEventListener("click", resetAll);
 
     document.addEventListener("keydown", (event) => {
@@ -121,24 +120,24 @@
 
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) {
-        stopPolling();
+        pausePolling();
       } else if (room && apiConfigured) {
-        syncNow({ force: true }).finally(startPolling);
+        syncAfterResume();
       }
     });
 
     window.addEventListener("online", () => {
-      if (room && apiConfigured) syncNow({ force: true }).finally(startPolling);
+      if (room && apiConfigured) syncAfterResume();
     });
 
     window.addEventListener("offline", () => {
-      stopPolling();
+      pausePolling();
       setSyncStatus("offline", "오프라인 · 기기에 저장 중");
       updateLastSyncLabel();
     });
 
     window.addEventListener("beforeunload", () => {
-      stopPolling();
+      pausePolling();
       window.clearInterval(relativeTimeTimer);
     });
   }
@@ -248,19 +247,32 @@
         }
       });
       entries = migrated;
-      markActivity({ restartPolling: false });
       saveEntries();
       updateRoomControls();
       if (Object.keys(entries).length) queueServerChanges(entries, true);
-      syncNow({ force: true }).finally(startPolling);
+      startAdaptiveSync();
+      syncNow({ force: true });
     }
 
     const copied = await copyText(window.location.href);
     showToast(copied ? "공유 링크를 복사했습니다." : "주소창의 링크를 복사해 주세요.");
   }
 
+  async function handleManualSync() {
+    const result = await syncNow({ force: true });
+    if (result === "changed") startAdaptiveSync();
+    else if (result === "unchanged" && !adaptiveSyncActive) enterManualMode();
+  }
+
+  async function syncAfterResume() {
+    const result = await syncNow({ force: true });
+    if (result === "changed") startAdaptiveSync();
+    else if (result === "unchanged" && adaptiveSyncActive) scheduleAdaptivePoll();
+    else if (result === "unchanged") enterManualMode();
+  }
+
   async function syncNow({ force = false } = {}) {
-    if (!room || !apiConfigured || document.hidden || !navigator.onLine || isSyncing) return;
+    if (!room || !apiConfigured || document.hidden || !navigator.onLine || isSyncing) return "skipped";
     isSyncing = true;
     setSyncStatus("syncing", "동기화 중");
 
@@ -270,7 +282,7 @@
       const response = await fetch(`${apiBaseUrl}/api/rooms/${room}`, { headers, cache: "no-store" });
       if (response.status === 304) {
         markSynced();
-        return;
+        return "unchanged";
       }
       if (!response.ok) throw new Error(`GET ${response.status}`);
 
@@ -293,15 +305,16 @@
         }
       }
 
-      if (receivedRemoteChange) markActivity({ restartPolling: false });
       saveEntries();
       render();
       markSynced();
       if (Object.keys(localWins).length) queueServerChanges(localWins);
+      return receivedRemoteChange ? "changed" : "unchanged";
     } catch (error) {
       console.warn("동기화 실패:", error);
       setSyncStatus(navigator.onLine ? "error" : "offline", navigator.onLine ? "연결 재시도 중" : "오프라인 · 기기에 저장 중");
       updateLastSyncLabel();
+      return "failed";
     } finally {
       isSyncing = false;
     }
@@ -399,7 +412,7 @@
       changes[item.id] = { checked: false, updatedAt: now, clientId };
     });
     entries = { ...entries, ...changes };
-    markActivity();
+    startAdaptiveSync();
     saveEntries();
     render();
     if (room && apiConfigured) queueServerChanges(changes, true);
@@ -410,41 +423,70 @@
     elements.shareButtonText.textContent = room ? "공유 링크 복사" : "공유 시작";
     elements.syncButton.hidden = !(room && apiConfigured);
     if (room && apiConfigured && !lastSyncedAt) {
-      elements.lastSyncText.textContent = "활동에 따라 30~180초 간격으로 자동 동기화됩니다.";
+      elements.lastSyncText.textContent = "처음 한 번 확인한 뒤 기본은 수동 동기화입니다.";
     }
   }
 
-  function startPolling() {
-    stopPolling();
-    if (!room || !apiConfigured || document.hidden || !navigator.onLine) return;
-    const delay = currentPollInterval();
+  function startAdaptiveSync() {
+    if (!room || !apiConfigured) return;
+    adaptiveSyncActive = true;
+    pollStep = 0;
+    pollingGeneration += 1;
+    scheduleAdaptivePoll();
+  }
+
+  function scheduleAdaptivePoll() {
+    pausePolling();
+    if (!adaptiveSyncActive || document.hidden || !navigator.onLine) return;
+    if (pollStep >= pollSchedule.length) {
+      enterManualMode();
+      return;
+    }
+
+    const generation = pollingGeneration;
+    const delay = pollSchedule[pollStep];
+    nextPollAt = Date.now() + delay;
     pollTimer = window.setTimeout(async () => {
-      await syncNow();
-      startPolling();
+      pollTimer = null;
+      nextPollAt = null;
+      const result = await syncNow();
+      if (!adaptiveSyncActive || generation !== pollingGeneration) return;
+      if (result === "changed") {
+        startAdaptiveSync();
+        return;
+      }
+      if (result === "failed" || result === "skipped") {
+        scheduleAdaptivePoll();
+        if (result === "failed") setSyncStatus("error", "연결 재시도 대기 중");
+        return;
+      }
+      pollStep += 1;
+      scheduleAdaptivePoll();
     }, delay);
+    setSyncStatus("online", "온라인 · 가변 동기화 중");
     updateLastSyncLabel();
   }
 
-  function stopPolling() {
+  function pausePolling() {
     window.clearTimeout(pollTimer);
     pollTimer = null;
+    nextPollAt = null;
   }
 
-  function currentPollInterval() {
-    const inactiveFor = Date.now() - lastActivityAt;
-    if (inactiveFor >= longIdleAfterMs) return pollIntervals.longIdle;
-    if (inactiveFor >= idleAfterMs) return pollIntervals.idle;
-    return pollIntervals.active;
-  }
-
-  function markActivity({ restartPolling = true } = {}) {
-    lastActivityAt = Date.now();
-    if (restartPolling && room && apiConfigured && !document.hidden && navigator.onLine) startPolling();
+  function enterManualMode() {
+    pausePolling();
+    adaptiveSyncActive = false;
+    pollStep = 0;
+    pollingGeneration += 1;
+    if (room && apiConfigured && navigator.onLine) {
+      setSyncStatus("online", "온라인 · 수동 모드");
+    }
+    updateLastSyncLabel();
   }
 
   function markSynced() {
     lastSyncedAt = new Date();
-    setSyncStatus("online", "온라인 · 동기화됨");
+    setSyncStatus("online", adaptiveSyncActive ? "온라인 · 가변 동기화 중" : "온라인 · 동기화됨");
     updateLastSyncLabel();
   }
 
@@ -458,15 +500,25 @@
     const seconds = Math.max(0, Math.round((Date.now() - lastSyncedAt.getTime()) / 1000));
     let relative = "방금 전";
     if (seconds >= 60) relative = `${Math.floor(seconds / 60)}분 전`;
-    elements.lastSyncText.textContent = `마지막 동기화 ${relative} · 다음 자동 확인 ${currentPollInterval() / 1000}초 간격`;
+    if (adaptiveSyncActive && nextPollAt) {
+      const remainingSeconds = Math.max(1, Math.ceil((nextPollAt - Date.now()) / 1000));
+      elements.lastSyncText.textContent = `마지막 동기화 ${relative} · 다음 자동 확인 ${formatDuration(remainingSeconds)}`;
+    } else {
+      elements.lastSyncText.textContent = `마지막 동기화 ${relative} · 수동 동기화 모드`;
+    }
   }
 
-  function clampInterval(value, fallback) {
-    return Math.min(Math.max(Number(value) || fallback, 5000), 300000);
+  function normalizePollSchedule(value, fallback) {
+    const source = Array.isArray(value) && value.length ? value : fallback;
+    return source.slice(0, 6).map((interval, index) => {
+      const fallbackInterval = fallback[index] || fallback[fallback.length - 1];
+      return Math.min(Math.max(Number(interval) || fallbackInterval, 5000), 3600000);
+    });
   }
 
-  function clampWindow(value, fallback) {
-    return Math.min(Math.max(Number(value) || fallback, 60000), 3600000);
+  function formatDuration(seconds) {
+    if (seconds < 60) return `${seconds}초 후`;
+    return `${Math.ceil(seconds / 60)}분 후`;
   }
 
   function loadEntries(targetRoom) {
