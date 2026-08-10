@@ -14,9 +14,9 @@
     !config.apiBaseUrl.includes("YOUR-WORKER");
   const apiBaseUrl = apiConfigured ? config.apiBaseUrl.replace(/\/$/, "") : "";
   const pollIntervals = {
-    active: clampInterval(config.pollIntervalsMs?.active, 15000),
-    idle: clampInterval(config.pollIntervalsMs?.idle, 30000),
-    longIdle: clampInterval(config.pollIntervalsMs?.longIdle, 60000),
+    active: clampInterval(config.pollIntervalsMs?.active, 30000),
+    idle: clampInterval(config.pollIntervalsMs?.idle, 60000),
+    longIdle: clampInterval(config.pollIntervalsMs?.longIdle, 180000),
   };
   const idleAfterMs = clampWindow(config.idleAfterMs, 120000);
   const longIdleAfterMs = Math.max(clampWindow(config.longIdleAfterMs, 600000), idleAfterMs);
@@ -403,7 +403,7 @@
     elements.shareButtonText.textContent = room ? "공유 링크 복사" : "공유 시작";
     elements.syncButton.hidden = !(room && apiConfigured);
     if (room && apiConfigured && !lastSyncedAt) {
-      elements.lastSyncText.textContent = "활동에 따라 15~60초 간격으로 자동 동기화됩니다.";
+      elements.lastSyncText.textContent = "활동에 따라 30~180초 간격으로 자동 동기화됩니다.";
     }
   }
 
@@ -455,7 +455,7 @@
   }
 
   function clampInterval(value, fallback) {
-    return Math.min(Math.max(Number(value) || fallback, 5000), 120000);
+    return Math.min(Math.max(Number(value) || fallback, 5000), 300000);
   }
 
   function clampWindow(value, fallback) {
