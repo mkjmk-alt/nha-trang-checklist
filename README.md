@@ -13,6 +13,7 @@ Worker의 CORS는 현재 GitHub Pages 출처인 `https://mkjmk-alt.github.io`로
 ## 포함된 기능
 
 - 14개 카테고리, 116개 준비 항목, 필수 항목 표시
+- 베트남 Pre-Arrival Information 등 공식 작성 페이지 바로가기
 - 전체·카테고리별 진행률
 - 전체 / 미완료 / 필수 / 완료 필터와 검색
 - 브라우저 `localStorage` 자동 저장과 전체 초기화
