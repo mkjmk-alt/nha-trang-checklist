@@ -13,7 +13,13 @@
     /^https:\/\//.test(config.apiBaseUrl) &&
     !config.apiBaseUrl.includes("YOUR-WORKER");
   const apiBaseUrl = apiConfigured ? config.apiBaseUrl.replace(/\/$/, "") : "";
-  const pollInterval = Math.min(Math.max(Number(config.pollIntervalMs) || 4000, 3000), 5000);
+  const pollIntervals = {
+    active: clampInterval(config.pollIntervalsMs?.active, 15000),
+    idle: clampInterval(config.pollIntervalsMs?.idle, 30000),
+    longIdle: clampInterval(config.pollIntervalsMs?.longIdle, 60000),
+  };
+  const idleAfterMs = clampWindow(config.idleAfterMs, 120000);
+  const longIdleAfterMs = Math.max(clampWindow(config.longIdleAfterMs, 600000), idleAfterMs);
   const clientId = getOrCreateClientId();
 
   let room = validRoom;
@@ -29,6 +35,7 @@
   let flushTimer = null;
   let lastWriteStartedAt = 0;
   let toastTimer = null;
+  let lastActivityAt = Date.now();
 
   const elements = {
     checklist: document.querySelector("#checklist"),
@@ -80,6 +87,7 @@
       const now = new Date().toISOString();
       const entry = { checked: input.checked, updatedAt: now, clientId };
       entries[input.dataset.itemId] = entry;
+      markActivity();
       saveEntries();
       render();
       if (room && apiConfigured) queueServerChanges({ [input.dataset.itemId]: entry });
@@ -101,7 +109,7 @@
     });
 
     elements.shareButton.addEventListener("click", handleShare);
-    elements.syncButton.addEventListener("click", () => syncNow({ force: true }));
+    elements.syncButton.addEventListener("click", () => syncNow({ force: true }).finally(startPolling));
     elements.resetButton.addEventListener("click", resetAll);
 
     document.addEventListener("keydown", (event) => {
@@ -233,10 +241,11 @@
         }
       });
       entries = migrated;
+      markActivity({ restartPolling: false });
       saveEntries();
       updateRoomControls();
       if (Object.keys(entries).length) queueServerChanges(entries, true);
-      startPolling();
+      syncNow({ force: true }).finally(startPolling);
     }
 
     const copied = await copyText(window.location.href);
@@ -262,17 +271,22 @@
       const remote = await response.json();
       const remoteItems = sanitizeEntries(remote.items || {});
       const localWins = {};
+      let receivedRemoteChange = false;
 
       for (const id of itemIds) {
         const local = entries[id];
         const server = remoteItems[id];
         const winner = newerEntry(local, server);
-        if (winner === server && server) entries[id] = server;
+        if (winner === server && server) {
+          if (compareEntries(server, local) > 0) receivedRemoteChange = true;
+          entries[id] = server;
+        }
         if (winner === local && local && (!server || compareEntries(local, server) > 0)) {
           localWins[id] = local;
         }
       }
 
+      if (receivedRemoteChange) markActivity({ restartPolling: false });
       saveEntries();
       render();
       markSynced();
@@ -378,6 +392,7 @@
       changes[item.id] = { checked: false, updatedAt: now, clientId };
     });
     entries = { ...entries, ...changes };
+    markActivity();
     saveEntries();
     render();
     if (room && apiConfigured) queueServerChanges(changes, true);
@@ -388,19 +403,36 @@
     elements.shareButtonText.textContent = room ? "공유 링크 복사" : "공유 시작";
     elements.syncButton.hidden = !(room && apiConfigured);
     if (room && apiConfigured && !lastSyncedAt) {
-      elements.lastSyncText.textContent = "같은 링크를 연 사람과 4초마다 자동 동기화됩니다.";
+      elements.lastSyncText.textContent = "활동에 따라 15~60초 간격으로 자동 동기화됩니다.";
     }
   }
 
   function startPolling() {
     stopPolling();
     if (!room || !apiConfigured || document.hidden || !navigator.onLine) return;
-    pollTimer = window.setInterval(() => syncNow(), pollInterval);
+    const delay = currentPollInterval();
+    pollTimer = window.setTimeout(async () => {
+      await syncNow();
+      startPolling();
+    }, delay);
+    updateLastSyncLabel();
   }
 
   function stopPolling() {
-    window.clearInterval(pollTimer);
+    window.clearTimeout(pollTimer);
     pollTimer = null;
+  }
+
+  function currentPollInterval() {
+    const inactiveFor = Date.now() - lastActivityAt;
+    if (inactiveFor >= longIdleAfterMs) return pollIntervals.longIdle;
+    if (inactiveFor >= idleAfterMs) return pollIntervals.idle;
+    return pollIntervals.active;
+  }
+
+  function markActivity({ restartPolling = true } = {}) {
+    lastActivityAt = Date.now();
+    if (restartPolling && room && apiConfigured && !document.hidden && navigator.onLine) startPolling();
   }
 
   function markSynced() {
@@ -419,7 +451,15 @@
     const seconds = Math.max(0, Math.round((Date.now() - lastSyncedAt.getTime()) / 1000));
     let relative = "방금 전";
     if (seconds >= 60) relative = `${Math.floor(seconds / 60)}분 전`;
-    elements.lastSyncText.textContent = `마지막 동기화 ${relative} · 화면이 보일 때 ${pollInterval / 1000}초 간격`;
+    elements.lastSyncText.textContent = `마지막 동기화 ${relative} · 다음 자동 확인 ${currentPollInterval() / 1000}초 간격`;
+  }
+
+  function clampInterval(value, fallback) {
+    return Math.min(Math.max(Number(value) || fallback, 5000), 120000);
+  }
+
+  function clampWindow(value, fallback) {
+    return Math.min(Math.max(Number(value) || fallback, 60000), 3600000);
   }
 
   function loadEntries(targetRoom) {
@@ -510,4 +550,3 @@
     toastTimer = window.setTimeout(() => elements.toast.classList.remove("is-visible"), 2600);
   }
 })();
-
