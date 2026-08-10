@@ -191,17 +191,24 @@
   function renderItem(item) {
     return `
       <li class="check-item">
-        <label>
-          <input
-            class="check-item__input"
-            type="checkbox"
-            data-item-id="${item.id}"
-            ${isChecked(item.id) ? "checked" : ""}
-          />
-          <span class="check-item__box" aria-hidden="true"></span>
-          <span class="check-item__title">${escapeHtml(item.title)}</span>
-          ${item.required ? '<span class="required-badge">필수</span>' : ""}
-        </label>
+        <div class="check-item__row">
+          <label class="check-item__label">
+            <input
+              class="check-item__input"
+              type="checkbox"
+              data-item-id="${item.id}"
+              ${isChecked(item.id) ? "checked" : ""}
+            />
+            <span class="check-item__box" aria-hidden="true"></span>
+            <span class="check-item__title">${escapeHtml(item.title)}</span>
+            ${item.required ? '<span class="required-badge">필수</span>' : ""}
+          </label>
+          ${
+            item.url
+              ? `<a class="check-item__action" href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(item.title)} 공식 페이지 열기">작성하기 <span aria-hidden="true">↗</span></a>`
+              : ""
+          }
+        </div>
       </li>`;
   }
 

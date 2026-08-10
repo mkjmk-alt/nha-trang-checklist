@@ -25,8 +25,13 @@ window.NHA_TRANG_CHECKLIST = [
       ["entry-name", "항공권 영문 이름과 여권 이름 일치 확인", true],
       ["entry-return-ticket", "귀국 항공권 예약 내역 저장", true],
       ["entry-hotel-address", "첫 숙소 영문명·주소·전화번호 저장", true],
-      ["entry-form", "출발 1~3일 전 최신 입국 절차 확인", true],
-      ["entry-form-shot", "입국 사전신고를 했다면 완료 화면 캡처", false],
+      [
+        "entry-form",
+        "베트남 입국 사전정보(Pre-Arrival Information) 작성",
+        true,
+        "https://prearrival.immigration.gov.vn/home-page",
+      ],
+      ["entry-form-shot", "입국 사전정보 작성 완료 화면 캡처", false],
       ["entry-visa", "내 여권·체류기간에 맞는 비자 필요 여부 확인", true],
     ],
   },
@@ -229,6 +234,5 @@ window.NHA_TRANG_CHECKLIST = [
   },
 ].map((category) => ({
   ...category,
-  items: category.items.map(([id, title, required]) => ({ id, title, required })),
+  items: category.items.map(([id, title, required, url]) => ({ id, title, required, url })),
 }));
-
