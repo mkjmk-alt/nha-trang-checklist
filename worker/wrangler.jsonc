@@ -1,0 +1,19 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nha-trang-checklist-api",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-10",
+  "workers_dev": true,
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "ALLOWED_ORIGINS": "https://mkjmk-alt.github.io"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "CHECKLIST_KV",
+      "id": "6555c92fb9114d03a03d908e5bdc2d96"
+    }
+  ]
+}
